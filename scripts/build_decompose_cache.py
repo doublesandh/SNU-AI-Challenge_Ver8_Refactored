@@ -19,7 +19,7 @@ from pathlib import Path
 
 
 def main():
-    from snuai.model_config import add_model_id_argument
+    from snuai.model_config import add_legacy_model_id_argument
 
     ap = argparse.ArgumentParser()
     ap.add_argument("--csv", default="data/train.csv")
@@ -27,7 +27,7 @@ def main():
     ap.add_argument("--holdout-val", action="store_true")
     ap.add_argument("--val-frac", type=float, default=0.1)
     ap.add_argument("--out", default="preproc/events_holdout.jsonl")
-    add_model_id_argument(ap)
+    add_legacy_model_id_argument(ap)
     ap.add_argument("--max-events", type=int, default=6)
     ap.add_argument("--max-new-tokens", type=int, default=120)
     ap.add_argument("--limit", type=int, default=0)

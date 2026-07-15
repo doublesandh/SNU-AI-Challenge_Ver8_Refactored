@@ -1,9 +1,4 @@
-"""Shared model selection for training, inference, and maintenance scripts.
-
-Keep the default in one place: model-specific CLI defaults used to be duplicated
-across seven entry points and had already drifted between local 8B and VESSL 32B
-checkpoints.
-"""
+"""Shared model selection for inference and legacy training entry points."""
 
 from __future__ import annotations
 
@@ -11,32 +6,50 @@ import os
 from collections.abc import Mapping
 
 
-DEFAULT_MODEL_ID = "Qwen/Qwen3-VL-8B-Thinking"
-"""Official reasoning-enhanced Qwen3-VL checkpoint used by default."""
+DEFAULT_MODEL_ID = "Qwen/Qwen3-VL-Reranker-8B"
+"""Official multimodal reranker used by the public inference pipeline."""
 
 MODEL_ID_ENV = "SNUAI_MODEL_ID"
-"""Environment override for offline mirrors and local checkpoint paths."""
+"""Environment override for offline reranker mirrors and local checkpoints."""
+
+LEGACY_TRAINING_MODEL_ID = "Qwen/Qwen3-VL-8B-Thinking"
+"""Generative checkpoint retained for historical score24 SFT/DPO experiments."""
+
+LEGACY_MODEL_ID_ENV = "SNUAI_LEGACY_MODEL_ID"
+
+
+def _model_id(default: str, env_name: str,
+              environ: Mapping[str, str] | None = None) -> str:
+    env = os.environ if environ is None else environ
+    return env.get(env_name, "").strip() or default
 
 
 def default_model_id(environ: Mapping[str, str] | None = None) -> str:
-    """Return the configured default model ID.
+    """Return the configured Qwen3-VL-Reranker checkpoint."""
+    return _model_id(DEFAULT_MODEL_ID, MODEL_ID_ENV, environ)
 
-    ``SNUAI_MODEL_ID`` lets GPU machines use a local Hugging Face mirror without
-    changing source code. Empty or whitespace-only values fall back to the
-    canonical public checkpoint.
-    """
 
-    env = os.environ if environ is None else environ
-    return env.get(MODEL_ID_ENV, "").strip() or DEFAULT_MODEL_ID
+def legacy_training_model_id(environ: Mapping[str, str] | None = None) -> str:
+    """Return the generative checkpoint for legacy training-only commands."""
+    return _model_id(LEGACY_TRAINING_MODEL_ID, LEGACY_MODEL_ID_ENV, environ)
 
 
 def add_model_id_argument(parser, **kwargs):
-    """Add the shared ``--model-id`` option to an argparse parser."""
-
+    """Add the shared reranker ``--model-id`` option to an argument parser."""
     kwargs.setdefault("default", default_model_id())
     kwargs.setdefault(
         "help",
-        f"base model/checkpoint (default: {DEFAULT_MODEL_ID}; "
-        f"override with {MODEL_ID_ENV})",
+        f"reranker checkpoint (default: {DEFAULT_MODEL_ID}; override with {MODEL_ID_ENV})",
+    )
+    return parser.add_argument("--model-id", **kwargs)
+
+
+def add_legacy_model_id_argument(parser, **kwargs):
+    """Add a clearly separated model option for score24 SFT/DPO utilities."""
+    kwargs.setdefault("default", legacy_training_model_id())
+    kwargs.setdefault(
+        "help",
+        "legacy generative checkpoint for score24 experiments "
+        f"(default: {LEGACY_TRAINING_MODEL_ID}; override with {LEGACY_MODEL_ID_ENV})",
     )
     return parser.add_argument("--model-id", **kwargs)

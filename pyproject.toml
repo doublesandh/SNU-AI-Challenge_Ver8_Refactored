@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "snuai"
-version = "0.1.0"
-description = "SNU AI Challenge 2026 - frame reordering pipeline (train/inference)"
+version = "0.2.0"
+description = "SNU AI Challenge 2026 frame reordering with Qwen3-VL-Reranker"
 requires-python = ">=3.10"
 
 [tool.setuptools.packages.find]

@@ -35,6 +35,21 @@ SCORE24_INSTRUCTION = (
     "Respond with exactly one letter (A-X): the code of the correct ranking."
 )
 
+RERANKER_SYSTEM_TEXT = (
+    "Judge whether the Document meets the requirements based on the Query and "
+    "the Instruct provided. Note that the answer can only be \"yes\" or \"no\"."
+)
+
+RERANKER_PERMUTATION_INSTRUCTION = (
+    "Determine whether the candidate sequence arranges all four video frames in "
+    "the chronological order described by the storyline."
+)
+
+RERANKER_PAIRWISE_INSTRUCTION = (
+    "Determine whether the first candidate frame occurs before the second candidate "
+    "frame in the storyline."
+)
+
 
 def score24_legend() -> str:
     """A~X ↔ rank 수열 범례. 반드시 perm에서 파생 (손으로 쓰면 규약 사고).
@@ -131,6 +146,66 @@ def media_content(images: Sequence, video_mode: bool = False, fps: float = 1.0,
         out.append(_txt(f"Image {k + 1}:"))
         out.append(_img(im))
     return out
+
+
+# ---------------------------------------------------------------------------
+# Qwen3-VL-Reranker — (query, candidate document) relevance prompts
+# ---------------------------------------------------------------------------
+
+def _reranker_candidate_content(images: Sequence, video_mode: bool = False,
+                                fps: float = 1.0, dup_factor: int = 1) -> list[dict]:
+    """Represent a proposed chronological sequence as the reranker's document.
+
+    Unlike ``media_content``, the order here is a hypothesis: position 1 is explicitly
+    proposed as earliest and the final position as latest. Keeping this separate avoids
+    reusing the shuffled-input wording from the legacy generative prompt.
+    """
+    if video_mode:
+        frames = ([im for im in images for _ in range(dup_factor)]
+                  if dup_factor > 1 else list(images))
+        return [
+            _txt(
+                f"The following {len(images)} candidate frames are proposed in "
+                "chronological order from earliest to latest. "
+                + (f"Each frame is repeated {dup_factor} times consecutively. "
+                   if dup_factor > 1 else "")
+            ),
+            {"type": "video", "video": frames, "fps": fps},
+        ]
+
+    labels = ("earliest", "second", "third", "latest")
+    content: list[dict] = [
+        _txt("The candidate frames below are proposed in chronological order."),
+    ]
+    for position, image in enumerate(images):
+        label = labels[position] if len(images) == 4 else f"position {position + 1}"
+        content.extend([_txt(f"\nCandidate {label}:"), _img(image)])
+    return content
+
+
+def build_reranker_messages(caption: str, ordered_images: Sequence,
+                            video_mode: bool = False, dup_factor: int = 1,
+                            instruction: str = RERANKER_PERMUTATION_INSTRUCTION) -> list[dict]:
+    """Build the official Qwen3-VL-Reranker query/document message structure."""
+    return [
+        {"role": "system", "content": [_txt(RERANKER_SYSTEM_TEXT)]},
+        {"role": "user", "content": [
+            _txt(f"<Instruct>: {instruction}"),
+            _txt(f"\n<Query>: Storyline: {caption}"),
+            _txt("\n<Document>: "),
+            *_reranker_candidate_content(
+                ordered_images, video_mode=video_mode, dup_factor=dup_factor),
+        ]},
+    ]
+
+
+def build_reranker_pairwise_messages(caption: str, first_image, second_image) -> list[dict]:
+    """Build a two-frame candidate used by the reranker-native cascade judge."""
+    return build_reranker_messages(
+        caption,
+        [first_image, second_image],
+        instruction=RERANKER_PAIRWISE_INSTRUCTION,
+    )
 
 
 # ---------------------------------------------------------------------------

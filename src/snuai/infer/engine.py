@@ -119,9 +119,15 @@ class VLMEngine:
                                          trust_remote_code=self.cfg.trust_remote_code)
         return getattr(cfg, "quantization_config", None) is not None
 
+    @staticmethod
+    def _auto_model_class():
+        """Model loader hook kept overridable for specialized Qwen checkpoints."""
+        from transformers import AutoModelForImageTextToText
+        return AutoModelForImageTextToText
+
     def _load_model(self):
         import torch
-        from transformers import AutoModelForImageTextToText
+        auto_model_class = self._auto_model_class()
 
         kw: dict = {"trust_remote_code": self.cfg.trust_remote_code}
         if self.cfg.dtype != "auto":
@@ -169,7 +175,7 @@ class VLMEngine:
         model, last_err = None, None
         for attn in attn_chain:
             try:
-                model = AutoModelForImageTextToText.from_pretrained(
+                model = auto_model_class.from_pretrained(
                     self.cfg.model_id, attn_implementation=attn, **kw)
                 self.attn_used = attn
                 break
@@ -321,3 +327,43 @@ class VLMEngine:
         gen_ids = out[:, prompt_len:]
         text = self.tokenizer.decode(gen_ids[0], skip_special_tokens=True)
         return text, gen_ids, prompt_len
+
+
+class Qwen3VLRerankerEngine(VLMEngine):
+    """Qwen3-VL reranker adapter exposing its native yes/no relevance score.
+
+    Qwen's reference implementation projects the final hidden state with
+    ``lm_head[yes] - lm_head[no]`` and applies a sigmoid. Taking the difference
+    between the final-token logits is algebraically identical while retaining the
+    shared, audited multimodal preprocessing in :class:`VLMEngine`.
+    """
+
+    @staticmethod
+    def _auto_model_class():
+        from transformers import Qwen3VLForConditionalGeneration
+        return Qwen3VLForConditionalGeneration
+
+    def __init__(self, cfg: EngineConfig):
+        if cfg.adapter_path:
+            raise ValueError(
+                "Qwen3-VL-Reranker uses its native relevance head; legacy score24 "
+                "adapters are not compatible"
+            )
+        super().__init__(cfg)
+        self.yes_id = self.token_id_of("yes")
+        self.no_id = self.token_id_of("no")
+        if self.yes_id == self.no_id:
+            raise ValueError("reranker yes/no token ids must be distinct")
+
+    def relevance_logit(self, messages: list[dict]) -> float:
+        """Return the raw relevance log-odds used by the official reranker."""
+        logits = self.next_token_logits(messages)
+        return float(logits[self.yes_id] - logits[self.no_id])
+
+    def relevance_score(self, messages: list[dict]) -> float:
+        """Return relevance probability in ``[0, 1]``."""
+        delta = self.relevance_logit(messages)
+        if delta >= 0:
+            return float(1.0 / (1.0 + np.exp(-delta)))
+        exp_delta = np.exp(delta)
+        return float(exp_delta / (1.0 + exp_delta))

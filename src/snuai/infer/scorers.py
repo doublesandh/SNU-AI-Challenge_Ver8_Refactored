@@ -1,8 +1,9 @@
-"""24점수 스코어러 3종 + pairwise 판독기 + frame-event 정렬기.
+"""Permutation scorers and pairwise judges for four-frame temporal ranking.
 
 모든 스코어러는 같은 인터페이스: scores(caption, images) → np.ndarray(24,)
-(인덱스 = perm.PERMS24의 rank 튜플, 값 = 로그점수) → TTA·캐스케이드에 그대로 연결.
+(인덱스 = perm.PERMS24의 rank 튜플, 값 = 상대 점수) → TTA·캐스케이드에 그대로 연결.
 
+  PermutationReranker  Qwen3-VL-Reranker로 24개 후보 시퀀스의 관련성 직접 채점
   Score24Scorer      단일 forward, 24글자 로짓 (파인튜닝 후 메인 경로, 샘플당 1 forward)
   LikelihoodScorer   후보 순서로 이미지를 배열하고 캡션 우도 측정 (zero-shot, 24 forwards)
   MatchScorer        캡션 분해 + 프레임×이벤트 정렬 행렬 (4×k forwards, 해석가능)
@@ -15,8 +16,60 @@ import numpy as np
 from .. import perm
 from ..data.decompose import split_events_rule
 from ..prompting import (_txt, build_frame_event_messages, build_pairwise_messages,
+                         build_reranker_messages, build_reranker_pairwise_messages,
                          build_score24_messages, media_content)
 from .match import scores24_from_matrix
+
+
+class PermutationReranker:
+    """Pointwise rerank all 24 proposed chronological frame sequences.
+
+    The query is the storyline and each document is one candidate ordering. The
+    resulting vector remains in the canonical ``perm.PERMS24`` rank-index space,
+    so TTA, cascade logic, reports, and submission formatting remain unchanged.
+    """
+
+    def __init__(self, engine, video_mode: bool = False, dup_factor: int = 1):
+        self.engine = engine
+        self.video_mode = video_mode
+        self.dup_factor = dup_factor
+
+    def scores(self, caption: str, images: list) -> np.ndarray:
+        if len(images) != perm.N:
+            raise ValueError(f"expected {perm.N} images, got {len(images)}")
+        scores = np.empty(len(perm.PERMS24), dtype=float)
+        for index, rank in enumerate(perm.PERMS24):
+            order = perm.rank_to_order(rank)
+            candidate = [images[slot] for slot in order]
+            messages = build_reranker_messages(
+                caption,
+                candidate,
+                video_mode=self.video_mode,
+                dup_factor=self.dup_factor,
+            )
+            scores[index] = self.engine.relevance_score(messages)
+        return scores
+
+
+class RerankerPairwiseJudge:
+    """Compare both two-frame orders using the same reranker checkpoint."""
+
+    def __init__(self, engine):
+        self.engine = engine
+
+    def p_earlier(self, caption: str, img_i, img_j) -> float:
+        forward = self.engine.relevance_logit(
+            build_reranker_pairwise_messages(caption, img_i, img_j))
+        reverse = self.engine.relevance_logit(
+            build_reranker_pairwise_messages(caption, img_j, img_i))
+        delta = forward - reverse
+        if delta >= 0:
+            return float(1.0 / (1.0 + np.exp(-delta)))
+        exp_delta = np.exp(delta)
+        return float(exp_delta / (1.0 + exp_delta))
+
+    def make_fn(self, caption: str, images: list):
+        return lambda i, j: self.p_earlier(caption, images[i], images[j])
 
 
 class Score24Scorer:
