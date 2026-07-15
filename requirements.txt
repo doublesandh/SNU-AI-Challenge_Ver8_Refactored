@@ -1,0 +1,12 @@
+# Core (CPU-testable) — laptop/CI에서 검증 가능한 최소 스택
+numpy
+pillow
+pytest
+torch
+transformers>=4.57.0     # Qwen3-VL-8B-Thinking 지원 버전
+accelerate
+peft
+datasets
+huggingface_hub
+safetensors
+kagglehub                # data_download.py (fresh clone에서 data/ 자동 확보)
