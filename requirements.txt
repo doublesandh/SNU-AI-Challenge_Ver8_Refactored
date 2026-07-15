@@ -3,7 +3,8 @@ numpy
 pillow
 pytest
 torch
-transformers>=4.57.0     # Qwen3-VL-8B-Thinking 지원 버전
+transformers>=4.57.0     # qwen3_vl 지원 버전
+qwen-vl-utils>=0.0.14    # Qwen3-VL-Reranker 공식 멀티모달 런타임 요구사항
 accelerate
 peft
 datasets

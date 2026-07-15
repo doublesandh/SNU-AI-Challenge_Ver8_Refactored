@@ -1,12 +1,11 @@
-"""QLoRA SFT 학습 스크립트 (Qwen3-VL-8B-Thinking 기본).
+"""Legacy score24 QLoRA SFT training script.
 
 Ver3 레시피(이미지 모드 + uniform 증강 + legend 프롬프트, `video-mode/counterfactual`
 OFF·`perm_mode=uniform`·`max-pixels 602112`·`max-steps 2000`)를 그대로 따르되
-base 모델은 reasoning-enhanced Qwen3-VL-8B-Thinking을 기본으로 사용한다.
 사전양자화 체크포인트는 config.json의 quantization_config로 자동 감지되어
 vision-skip 보정(patch_prequant_vision_skip)까지 알아서 적용된다 — 플래그 불필요.
 
-예 (기본 Qwen3-VL-8B-Thinking — 세션 재개):
+예 (legacy generative checkpoint — 세션 재개):
   python -m snuai.train.train_sft --csv train.csv --image-dir images/train \
       --out /vessl-volume/sft8b_thinking --resume --grad-accum 16
 
@@ -32,7 +31,7 @@ from ..data.augment import AugmentConfig, identity_ratio_for_target
 from ..data.sample import load_csv
 from ..data.split import split_samples
 from ..infer.engine import apply_pixel_budget
-from ..model_config import add_model_id_argument
+from ..model_config import add_legacy_model_id_argument
 from .dataset import Score24SFTDataset, SFTCollator, SFTDatasetConfig
 from .qlora import (lora_targets_of_model, make_bnb_kwargs, make_lora_config,
                     patch_prequant_vision_skip, verify_lora_only_on_language,
@@ -151,7 +150,7 @@ def main(argv=None):
     d = ap.add_argument
     d("--csv", required=True); d("--image-dir", required=True)
     d("--caption-col", default="Caption"); d("--val-frac", type=float, default=0.1)
-    add_model_id_argument(ap)
+    add_legacy_model_id_argument(ap)
     # 4bit=QLoRA(기본, 24GB 검증됨) / bf16=풀정밀 LoRA(E2 실험 — 24GB 경계, 스모크 필수)
     d("--precision", default="4bit", choices=["4bit", "bf16"])
     # Ver2: 추론(predict.py)과 동일한 602112으로 정렬 — 학습/추론 해상도 일치 원칙

@@ -1,6 +1,6 @@
 """캐스케이드 — 불확실도(margin) 기반 적응형 2단계 추론.
 
-Stage 1: score24(또는 우도) 24점수 → margin = p(top1) − p(top2)
+Stage 1: permutation reranker의 24점수 → margin = p(top1) − p(top2)
 Stage 2: margin < τ 인 샘플만, top1·top2의 분쟁 pair를 pairwise 로짓으로 재검
 융합:   final(π) = log p₁(π) + λ·Σ_pair log p(pair 방향이 π와 일치)
 

@@ -4,6 +4,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 # SNU AI Challenge (2026) — **Ver8**
 
+## Current inference model (v0.2)
+
+The public inference entry point now uses `Qwen/Qwen3-VL-Reranker-8B`. It treats the
+storyline as a query and the 24 possible chronological frame sequences as candidate
+documents, then ranks them with the checkpoint's native `yes`/`no` relevance score.
+See `README.md` for current setup and commands. The score24/QLoRA sections below are
+retained as historical experiment and training notes; their adapters are not compatible
+with the reranker inference engine.
+
 캡션(스토리라인)에 맞춰 셔플된 비디오 프레임 4장을 시간순으로 재배열하는 멀티모달
 태스크 (4! = 24 순열 중 정답 찾기). 대회: https://snuaichallenge.github.io/
 

@@ -1,14 +1,12 @@
 """3090 속도·VRAM 벤치마크 — 샘플당 예산(하드 105초 / 목표 60초) 판정.
 
 max_pixels 그리드별로 실측해 '819개 × 24h' 완주 가능성을 표로 출력한다.
-어댑터가 있으면 score24(1 forward), 없으면 likelihood(24 forwards)로 측정.
+Qwen3-VL-Reranker가 24개 후보 순서를 pointwise로 채점하는 전체 비용을 측정한다.
 
 예:
   python scripts/bench_3090.py --four-bit \
       --csv train.csv --image-dir images/train --n 12 \
       --pixel-grid 200704,401408,602112,1003520
-
-  # 로컬 미러는 SNUAI_MODEL_ID 환경 변수 또는 --model-id로 지정
 """
 
 from __future__ import annotations
@@ -27,7 +25,6 @@ def main():
 
     ap = argparse.ArgumentParser()
     add_model_id_argument(ap)
-    ap.add_argument("--adapter", default=None)
     ap.add_argument("--four-bit", action="store_true")
     ap.add_argument("--attn", default=None)
     ap.add_argument("--csv"); ap.add_argument("--image-dir")
@@ -41,8 +38,8 @@ def main():
 
     import torch
     from snuai.data.sample import load_csv
-    from snuai.infer.engine import EngineConfig, VLMEngine
-    from snuai.infer.scorers import LikelihoodScorer, Score24Scorer
+    from snuai.infer.engine import EngineConfig, Qwen3VLRerankerEngine
+    from snuai.infer.scorers import PermutationReranker
     from snuai.infer.tta import TTAConfig, tta_scores
 
     if args.csv:
@@ -54,10 +51,10 @@ def main():
 
     rows = []
     for mp in [int(x) for x in args.pixel_grid.split(",")]:
-        eng = VLMEngine(EngineConfig(model_id=args.model_id, adapter_path=args.adapter,
-                                     four_bit=args.four_bit, attn=args.attn, max_pixels=mp))
-        scorer = (Score24Scorer(eng, video_mode=args.video_mode) if args.adapter
-                  else LikelihoodScorer(eng, video_mode=args.video_mode))
+        eng = Qwen3VLRerankerEngine(EngineConfig(
+            model_id=args.model_id, four_bit=args.four_bit,
+            attn=args.attn, max_pixels=mp))
+        scorer = PermutationReranker(eng, video_mode=args.video_mode)
         mode = type(scorer).__name__
         if torch.cuda.is_available():
             torch.cuda.reset_peak_memory_stats()

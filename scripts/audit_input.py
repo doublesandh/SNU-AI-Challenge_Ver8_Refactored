@@ -9,9 +9,9 @@ Ver2 사고(비디오 인코딩이 셔플된 무관 프레임을 병합 → LB -
 
 사용:
   python scripts/audit_input.py --csv data/train.csv --image-dir data/train \
-      --model-id Qwen/Qwen3-VL-8B-Thinking \
-      --video-mode --video-dup-factor 2 --legend \
-      --out runs/audit/ver7_videodup.json
+      --model-id Qwen/Qwen3-VL-Reranker-8B \
+      --video-mode --video-dup-factor 2 \
+      --out runs/audit/reranker_videodup.json
 
   # 이전 덤프와 구조 diff (허용 목록 밖 변화가 있으면 exit 1)
   python scripts/audit_input.py ... --out runs/audit/ver7_videodup.json \
@@ -32,6 +32,8 @@ from pathlib import Path
 
 _TIMESTAMP_RE = re.compile(r"<\d+\.?\d*\s*seconds?>")
 _IMAGE_LABEL_RE = re.compile(r"Image \d+:")
+_CANDIDATE_LABEL_RE = re.compile(
+    r"Candidate (?:earliest|second|third|latest|position \d+):")
 
 
 # ---------------------------------------------------------------------------
@@ -92,10 +94,9 @@ def load_one_sample(args):
 
 
 def build_messages(sample, args):
-    from snuai.prompting import build_score24_messages
-    return build_score24_messages(
+    from snuai.prompting import build_reranker_messages
+    return build_reranker_messages(
         sample.caption, sample.load_images(), video_mode=args.video_mode,
-        counterfactual=args.counterfactual, legend=args.legend,
         dup_factor=args.video_dup_factor)
 
 
@@ -147,39 +148,22 @@ def audit_one(processor, sample, args) -> tuple[dict, list[int], set[int]]:
         "text_tokens_total": len(ids) - vision_total if vision_total is not None else None,
         "total_len": len(ids),
         "image_label_count": count_image_labels(decoded),
+        "candidate_label_count": len(_CANDIDATE_LABEL_RE.findall(decoded)),
         "timestamp_count": count_timestamps(decoded),
         "recipe": {
             "video_mode": args.video_mode, "dup_factor": args.video_dup_factor,
-            "legend": args.legend, "counterfactual": args.counterfactual,
             "max_pixels": args.max_pixels, "video_max_pixels": args.video_max_pixels,
             "model_id": args.model_id,
+            "scoring_contract": "qwen3_vl_reranker_yes_no",
         },
     }
     return facts, ids, vision_ids
 
 
-def check_label_masking(processor, sample, args) -> dict:
-    """(train 샘플 한정) 학습 대상 토큰이 정확히 2개(letter+eos)인지 — SFTCollator 재사용."""
-    if sample.rank is None:
-        return {"skipped": "no rank (test-mode sample)"}
-    from snuai.data.augment import AugmentConfig
-    from snuai.train.dataset import Score24SFTDataset, SFTCollator, SFTDatasetConfig
-    cfg = SFTDatasetConfig(augment=AugmentConfig(perm_mode="off"), video_mode=args.video_mode,
-                          video_dup_factor=args.video_dup_factor, legend=args.legend,
-                          counterfactual=args.counterfactual, verify_ratio=0.0)
-    ds = Score24SFTDataset([sample], cfg)
-    item = ds[0]
-    collator = SFTCollator(processor)
-    batch = collator([item])  # SFTCollator 내부에서 라벨 정렬 실패 시 이미 ValueError
-    n_trained = int((batch["labels"][0] != -100).sum().item())
-    return {"trained_tokens": n_trained, "expected": 2, "ok": n_trained == 2}
-
-
 def main(argv=None):
-    from snuai.model_config import add_model_id_argument
-
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
+    from snuai.model_config import add_model_id_argument
     d = ap.add_argument
     d("--csv"); d("--image-dir"); d("--caption-col", default="Caption")
     d("--holdout-val", action="store_true"); d("--val-frac", type=float, default=0.1)
@@ -188,10 +172,7 @@ def main(argv=None):
     d("--video-mode", action=argparse.BooleanOptionalAction, default=False)
     d("--video-dup-factor", type=int, default=1)
     d("--video-max-pixels", type=int, default=None)
-    d("--legend", action=argparse.BooleanOptionalAction, default=True)
-    d("--counterfactual", action=argparse.BooleanOptionalAction, default=False)
     d("--max-pixels", type=int, default=602112)
-    d("--check-labels", action="store_true", help="라벨 마스킹 점검도 실행(train 샘플 필요)")
     d("--out", required=True)
     d("--diff", default=None, help="이전 덤프 JSON 경로 — 구조 diff 검사")
     d("--allow-diff", default="", help="쉼표구분 필드명 — 의도된 diff는 이 목록만 허용")
@@ -216,9 +197,6 @@ def main(argv=None):
     sample = load_one_sample(args)
     facts, ids, vision_ids = audit_one(processor, sample, args)
     facts["recipe"]["video_max_pixels"] = video_max_pixels
-
-    if args.check_labels:
-        facts["label_check"] = check_label_masking(processor, sample, args)
 
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)

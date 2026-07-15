@@ -5,7 +5,7 @@
   submission  Kaggle Answer 포맷 입출력
   data/       전처리 (학습·추론 공용/분리)
   train/      학습 (QLoRA SFT, DPO, 보조 태스크)
-  infer/      추론 (score24, TTA, 캐스케이드, FSM, decompose-and-match)
+  infer/      추론 (Qwen3-VL permutation reranking, TTA, 캐스케이드)
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"

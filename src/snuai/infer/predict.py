@@ -2,12 +2,12 @@
 
 사용 예 (3090):
   python -m snuai.infer.predict --csv test.csv --image-dir images/test \
-      --strategy score24 --model-id Qwen/Qwen3-VL-8B-Thinking --adapter runs/sft \
-      --four-bit --max-pixels 602112 --tta 3 --cascade --tau 0.15 --out runs/final
+      --model-id Qwen/Qwen3-VL-Reranker-8B --max-pixels 602112 \
+      --tta 3 --cascade --tau 0.15 --out runs/final
 
 검증/캘리브레이션 (train 홀드아웃, 라벨 있음 → 정확도·margin 표·τ 제안 출력):
   python -m snuai.infer.predict --csv train.csv --image-dir images/train \
-      --holdout-val --strategy likelihood --model-id ... --eval --out runs/val
+      --holdout-val --model-id Qwen/Qwen3-VL-Reranker-8B --eval --out runs/val
 
 GPU 없이 파이프라인 자체 검증 (합성 데이터 + 오라클 스코어러):
   python -m snuai.infer.predict --synthetic 60 --strategy dummy --noise 3.0 \
@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 import time
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -33,7 +34,7 @@ from .. import perm, submission
 from ..budget import BudgetGuard
 from ..data.sample import Sample, load_csv
 from ..data.split import split_samples
-from ..model_config import add_model_id_argument
+from ..model_config import DEFAULT_MODEL_ID, add_model_id_argument
 from .cascade import (CascadeConfig, margin_accuracy_table, margin_of, run_cascade,
                       tau_by_escalation_budget)
 from .tta import TTAConfig, tta_scores
@@ -78,7 +79,7 @@ class OracleScorer:
 
 @dataclass
 class PredictConfig:
-    strategy: str = "score24"       # score24|likelihood|match|cot|dummy
+    strategy: str = "reranker"      # reranker|dummy
     tta_views: int = 1
     tta_seed: int = 1234
     tta_agg: str = "mean"
@@ -216,37 +217,27 @@ def build_scorer(args) -> tuple[object, object]:
         sc = OracleScorer(noise=args.noise, seed=0)
         return sc, sc.make_pairwise_fn
 
-    from .engine import EngineConfig, VLMEngine
-    from .scorers import (CoTFSMScorer, LikelihoodScorer, MatchScorer,
-                          PairwiseJudge, Score24Scorer)
+    from .engine import EngineConfig, Qwen3VLRerankerEngine
+    from .scorers import PermutationReranker, RerankerPairwiseJudge
     # video_max_pixels 자동계산: video는 전체 프레임 합산 예산제라, dup으로 늘어난
     # 프레임 수(len(images)*dup_factor)만큼 비례 상향해야 프레임당 해상도가 보존된다.
     # (자연크기 기반의 더 작은 값 대신 max_pixels 기반을 쓰는 이유는 engine.py 주석 참고)
     video_max_pixels = args.video_max_pixels
     if video_max_pixels is None and args.video_mode and args.video_dup_factor > 1:
         video_max_pixels = perm.N * args.video_dup_factor * args.max_pixels
-    eng = VLMEngine(EngineConfig(
-        model_id=args.model_id, four_bit=args.four_bit, adapter_path=args.adapter,
+    if args.strategy != "reranker":
+        raise SystemExit(f"unknown strategy: {args.strategy}")
+    if not args.model_id:
+        args.model_id = DEFAULT_MODEL_ID
+    eng = Qwen3VLRerankerEngine(EngineConfig(
+        model_id=args.model_id, four_bit=args.four_bit,
         max_pixels=args.max_pixels, min_pixels=args.min_pixels,
         video_max_pixels=video_max_pixels, video_dup_factor=args.video_dup_factor,
         device=args.device, attn=args.attn))
     print(f"[engine] {args.model_id} attn={eng.attn_used} device={eng.device}")
-    if args.strategy == "score24":
-        if not args.adapter:
-            print("⚠️ score24는 파인튜닝(어댑터) 후에 유의미 — zero-shot이면 likelihood 권장")
-        sc = Score24Scorer(eng, video_mode=args.video_mode,
-                           counterfactual=args.counterfactual, legend=args.legend,
-                           dup_factor=args.video_dup_factor)
-    elif args.strategy == "likelihood":
-        sc = LikelihoodScorer(eng, video_mode=args.video_mode)
-    elif args.strategy == "match":
-        sc = MatchScorer(eng)
-    elif args.strategy == "cot":
-        sc = CoTFSMScorer(eng, n_samples=args.cot_samples, video_mode=args.video_mode,
-                          counterfactual=args.counterfactual, dup_factor=args.video_dup_factor)
-    else:
-        raise SystemExit(f"unknown strategy: {args.strategy}")
-    judge = PairwiseJudge(eng)
+    sc = PermutationReranker(
+        eng, video_mode=args.video_mode, dup_factor=args.video_dup_factor)
+    judge = RerankerPairwiseJudge(eng)
 
     def pairwise_factory(caption, images):
         return judge.make_fn(caption, images)
@@ -272,6 +263,11 @@ def load_samples(args) -> list[Sample]:
 
 
 def main(argv=None):
+    # Windows shells can inherit a non-UTF-8 code page even for a Korean workspace.
+    # Keep late report printing from crashing after a completed prediction run.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
     ap = argparse.ArgumentParser(description="SNU AI Challenge 추론 파이프라인")
     d = ap.add_argument
     d("--csv"); d("--image-dir"); d("--caption-col", default="Caption")
@@ -279,16 +275,14 @@ def main(argv=None):
     d("--holdout-val", action="store_true", help="train CSV에서 홀드아웃만 사용")
     d("--val-frac", type=float, default=0.1)
     d("--limit", type=int, default=0)
-    d("--strategy", default="score24",
-      choices=["score24", "likelihood", "match", "cot", "dummy"])
+    d("--strategy", default="reranker", choices=["reranker", "dummy"])
     add_model_id_argument(ap)
-    d("--adapter"); d("--four-bit", action="store_true")
+    d("--four-bit", action="store_true")
     d("--device", default="auto"); d("--attn", default=None)
-    # 학습 기본값(train_sft.py)과 동일한 602112 — 학습/추론 해상도 일치 원칙
+    # Qwen3-VL-Reranker 입력의 프레임당 해상도 예산
     d("--max-pixels", type=int, default=602112); d("--min-pixels", type=int, default=None)
-    # Ver3 기본 OFF (Ver2 하락 원인 — VER3.md). Ver2 어댑터로 추론할 때만 --video-mode 등으로 켤 것
     d("--video-mode", action=argparse.BooleanOptionalAction, default=False,
-      help="4프레임을 비디오 채널로 입력 (Ver2 어댑터 호환용)")
+      help="각 후보 시퀀스를 비디오 채널로 입력")
     # Ver7 video_dup: R1(비디오 인코딩) 재도전 — 각 프레임 연속 복제로 temporal_patch_size=2
     # 병합쌍이 항상 자기 자신과의 쌍이 되게 함(무관 프레임 병합 오염 차단). 1 또는 짝수만 유효.
     d("--video-dup-factor", type=int, default=1,
@@ -296,11 +290,6 @@ def main(argv=None):
     d("--video-max-pixels", type=int, default=None,
       help="video_processor 전용 예산(전체 프레임 합산제) — 생략 시 "
            "len(images)*video-dup-factor*max-pixels로 자동 계산")
-    d("--counterfactual", action=argparse.BooleanOptionalAction, default=False,
-      help="반사실적 자기검증 문구 추가 (Ver2 어댑터 호환용)")
-    d("--legend", action=argparse.BooleanOptionalAction, default=True,
-      help="A~X↔순열 범례 명시 — 학습 프롬프트와 일치 필수 (Ver1/Ver2 어댑터면 --no-legend)")
-    d("--cot-samples", type=int, default=1, help="Self-Consistency 샘플 수")
     # Ver3 기본 1(TTA 없음) — 홀드아웃에서 이득이 실증될 때만 게이트 통과 후 상향
     d("--tta", type=int, default=1, dest="tta_views")
     d("--cascade", action="store_true"); d("--tau", type=float, default=0.15)
